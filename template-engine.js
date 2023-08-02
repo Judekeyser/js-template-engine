@@ -15,6 +15,8 @@ const HANDLED_EVENTS = (() => {
     return mapping
 })()
 
+const MAX_ALLOWED_DEPTH = 10
+
 const OPENING_TOKEN = '{{'
 const CLOSING_TOKEN = '}}'
 
@@ -36,9 +38,15 @@ function generateTreeFromExpression(template) {
     }
     
     let cursor = 0
-    let tree = root
+    let ancestorChain = [root]
+    
     for(;cursor < template.length;) {
+        if(ancestorChain.length >= MAX_ALLOWED_DEPTH)
+            throw "Template is too deep"
+        
         let openingIndex = template.indexOf(OPENING_TOKEN, cursor)
+        let tree = ancestorChain.pop()
+        
         if(openingIndex >= 0) {
             tree.children.push({
                 slice: template.substring(cursor, openingIndex)
@@ -50,59 +58,60 @@ function generateTreeFromExpression(template) {
             switch(template[openingIndex+OPENING_TOKEN.length]) {
                 case SECTION_MARKER: {
                     let nextTree = {
-                        parent: tree,
                         section: true,
                         variable,
                         children: []
                     }
                     tree.children.push(nextTree)
-                    tree = nextTree
+                    ancestorChain.push(tree)
+                    ancestorChain.push(nextTree)
                 }; break;
                 case EMPTY_SECTION_MARKER: {
                     let nextTree = {
-                        parent: tree,
                         emptySection: true,
                         variable,
                         children: []
                     }
                     tree.children.push(nextTree)
-                    tree = nextTree
+                    ancestorChain.push(tree)
+                    ancestorChain.push(nextTree)
                 }; break;
                 case IF_BLOCK_MARKER: {
                     let nextTree = {
-                        parent: tree,
                         positiveConditional: true,
                         variable,
                         children: []
                     }
                     tree.children.push(nextTree)
-                    tree = nextTree
+                    ancestorChain.push(tree)
+                    ancestorChain.push(nextTree)
                 }; break;
                 case ELSE_BLOCK_MARKER: {
                     let nextTree = {
-                        parent: tree,
                         negativeConditional: true,
                         variable,
                         children: []
                     }
                     tree.children.push(nextTree)
-                    tree = nextTree
+                    ancestorChain.push(tree)
+                    ancestorChain.push(nextTree)
                 }; break;
                 case EVENT_MARKER: {
                     tree.children.push({
                         event: true,
                         variable
                     })
+                    ancestorChain.push(tree)
                 }; break;
                 case TEXT_CONTENT_MARKER: {
                     tree.children.push({
                         textContent: true,
                         variable
                     })
+                    ancestorChain.push(tree)
                 }; break;
-                case END_OF_BLOCK: {
-                    tree = tree.parent
-                }; break;
+                case END_OF_BLOCK:
+                    break;
                 default: {
                     let pipeIndex = template.indexOf(PIPE_DELIMITER, cursor)
                     if(pipeIndex == -1) throw "Malformed template"
@@ -113,6 +122,7 @@ function generateTreeFromExpression(template) {
                         variable,
                         pipe
                     })
+                    ancestorChain.push(tree)
                 }; break;
             }
             
@@ -122,7 +132,7 @@ function generateTreeFromExpression(template) {
                 slice: template.substring(cursor, template.length)
             })
             
-            cursor = template.length
+            cursor = template.length // loop is over, so break is not required
         }
     }
     
@@ -232,7 +242,6 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
 }
 
 
-
 function compile(template) {
     let root = generateTreeFromExpression(template)
     
@@ -253,6 +262,9 @@ function compile(template) {
     
     return { hydrate }
 }
+
+
+export { compile }
 
 
 export { compile }
