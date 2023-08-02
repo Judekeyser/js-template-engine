@@ -23,7 +23,6 @@ const EMPTY_SECTION_MARKER = '^'
 const IF_BLOCK_MARKER = '?'
 const ELSE_BLOCK_MARKER = ':'
 const TEXT_CONTENT_MARKER = '§'
-const TOKEN_MARKER  = '_'
 const EVENT_MARKER = '%'
 const PIPE_DELIMITER = '|'
 const END_OF_BLOCK = '/'
@@ -89,12 +88,6 @@ function generateTreeFromExpression(template) {
                     tree.children.push(nextTree)
                     tree = nextTree
                 }; break;
-                case TOKEN_MARKER: {
-                    tree.children.push({
-                        placeholder: true,
-                        variable
-                    })
-                }; break;
                 case EVENT_MARKER: {
                     tree.children.push({
                         event: true,
@@ -133,6 +126,8 @@ function generateTreeFromExpression(template) {
         }
     }
     
+    console.log(root)
+    
     return root;
 }
 
@@ -141,11 +136,7 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
     if(!scope) yield ''
     let variable = treeNode.variable
     
-    if(treeNode.placeholder) {
-        if(variable && Object.hasOwn(scope, variable)) {
-            if(!!scope[variable]) yield variable
-        }
-    } else if(treeNode.slice != null) {
+    if(treeNode.slice != null) {
         yield treeNode.slice
     } else if(treeNode.section) {
         if(!variable) {
@@ -221,10 +212,17 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
         }
     } else if(treeNode.pipe) {
         if(variable && Object.hasOwn(scope, variable)) {
-            let value = scope[variable]
-            elementUuids.get(elementUuid).push(
-                _ => _.setAttribute(treeNode.pipe, value)
-            )
+            if(treeNode.pipe === 'class') {
+                if(!!scope[variable]) {
+                    var sideEffect = _ => _.classList.add(variable)
+                } else {
+                    var sideEffect = _ => _.classList.remove(variable)
+                }
+            } else {
+                let value = scope[variable]
+                var sideEffect = _ => _.setAttribute(treeNode.pipe, value)
+            }
+            elementUuids.get(elementUuid).push(sideEffect)
         }
     } else {
         for(let childNode of treeNode.children) {
@@ -233,25 +231,27 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
     }
 }
 
+
+
 function compile(template) {
     let root = generateTreeFromExpression(template)
     
-    return scope => {
+    const hydrate = (domRoot, scope) => {
         let elementUuids = new Map()
         let rawHTML = [
-            ...iterativeMake(root, scope, elementUuids, undefined)
+            ...iterativeMake(root, scope, elementUuids)
         ].join("")
-        
-        let hydrate = domRoot => {
-            domRoot.innerHTML = rawHTML
-            for(let [uuid, sideEffects] of elementUuids) {
-                for(let sideEffect of sideEffects) {
-                    sideEffect(domRoot.querySelector(`*[${IDENTIFICATION_ATTRIBUTE}=${uuid}]`))
-                }
+        domRoot.innerHTML = rawHTML
+        for(let [uuid, sideEffects] of elementUuids) {
+            for(let sideEffect of sideEffects) {
+                sideEffect(domRoot.querySelector(`*[${IDENTIFICATION_ATTRIBUTE}=${uuid}]`))
             }
         }
-        return { hydrate }
+        
+        return {}
     }
+    
+    return { hydrate }
 }
 
 
