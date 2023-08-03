@@ -34,7 +34,8 @@ const IDENTIFICATION_ATTRIBUTE = 'data-uuid'
 
 function generateTreeFromExpression(template) {
     let root = {
-        children: []
+        children: [],
+        root: true
     }
     let elementUuids = new Set()
     
@@ -146,8 +147,6 @@ function generateTreeFromExpression(template) {
         }
     }
     
-    console.log(root)
-    
     return root;
 }
 
@@ -180,13 +179,14 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid, childSequenc
         } else if(Object.hasOwn(scope, variable)) {
             scope = scope[variable]
             if(typeof scope[Symbol.iterator] === 'function') {
-                let index = 0
+                childSequence.push(0)
                 for(let record of scope) {
                     for(let childNode of treeNode.children) {
-                        yield* iterativeMake(childNode, record, elementUuids, elementUuid, [...childSequence, index])
+                        yield* iterativeMake(childNode, record, elementUuids, elementUuid, childSequence)
                     }
-                    index += 1
+                    childSequence[childSequence.length - 1] += 1
                 }
+                childSequence.pop()
             } else {
                 for(let childNode of treeNode.children) {
                     yield* iterativeMake(childNode, scope, elementUuids, elementUuid, childSequence)
@@ -201,25 +201,31 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid, childSequenc
                     for(let record of scope) break guard
                 } catch(error) { console.error(error); break guard }
                 
+                childSequence.push('-1')
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, record, elementUuids, elementUuid, [...childSequence, -1])
+                    yield* iterativeMake(childNode, record, elementUuids, elementUuid, childSequence)
                 }
+                childSequence.pop()
             }
         }
     } else if(treeNode.positiveConditional) {
         if(variable && Object.hasOwn(scope, variable)) {
             if(typeof scope[variable] === 'boolean' && scope[variable] === true) {
+                childSequence.push('t')
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, scope, elementUuids, elementUuid, [...childSequence, 't'])
+                    yield* iterativeMake(childNode, scope, elementUuids, elementUuid, childSequence)
                 }
+                childSequence.pop()
             }
         }
     } else if(treeNode.negativeConditional) {
         if(variable && Object.hasOwn(scope, variable)) {
             if(typeof scope[variable] === 'boolean' && scope[variable] === false) {
+                childSequence.push('f')
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, scope, elementUuids, elementUuid, [...childSequence, 'f'])
+                    yield* iterativeMake(childNode, scope, elementUuids, elementUuid, childSequence)
                 }
+                childSequence.pop()
             }
         }
     } else if(treeNode.event) {
@@ -265,10 +271,12 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid, childSequenc
             
             elementUuids.get(identifier).push(sideEffect)
         }
-    } else {
+    } else if(treeNode.root) {
         for(let childNode of treeNode.children) {
             yield* iterativeMake(childNode, scope, elementUuids, elementUuid, childSequence)
         }
+    } else {
+        throw "Kawabunga, we are on a node we cannot handle?"
     }
 }
 
