@@ -36,6 +36,7 @@ function generateTreeFromExpression(template) {
     let root = {
         children: []
     }
+    let elementUuids = new Set()
     
     let cursor = 0
     let ancestorChain = [root]
@@ -62,6 +63,15 @@ function generateTreeFromExpression(template) {
                         variable,
                         children: []
                     }
+                    
+                    if(!variable) {
+                        let elementUuid; do {
+                            elementUuid = 'uuid'+parseInt(Math.random() * 100_000_000)
+                        } while(elementUuids.has(elementUuid))
+                        elementUuids.add(elementUuid)
+                    nextTree.elementUuid = elementUuid
+                    }
+                    
                     tree.children.push(nextTree)
                     ancestorChain.push(tree)
                     ancestorChain.push(nextTree)
@@ -142,7 +152,7 @@ function generateTreeFromExpression(template) {
 }
 
 
-function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
+function* iterativeMake(treeNode, scope, elementUuids, elementUuid, childSequence) {
     if(!scope) yield ''
     let variable = treeNode.variable
     
@@ -150,27 +160,36 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
         yield treeNode.slice
     } else if(treeNode.section) {
         if(!variable) {
-            let elementUuid; do {
-                elementUuid = 'uuid'+parseInt(Math.random() * 100_000_000)
-            } while(elementUuids.has(elementUuid))
-            elementUuids.set(elementUuid, [])
+            if(elementUuid)
+                throw "Nested identification blocks are forbidden"
             
-            yield ` ${IDENTIFICATION_ATTRIBUTE}="${elementUuid}" `
+            elementUuid = treeNode.elementUuid
+            let sequenceHash = childSequence.join("_")
+            let identifier = `${elementUuid}-${sequenceHash}`
+            
+            if(elementUuids.has(identifier))
+                throw "Logical error: identifier already exists"
+            
+            elementUuids.set(identifier, [])
+            
+            yield ` ${IDENTIFICATION_ATTRIBUTE}="${identifier}" `
             
             for(let childNode of treeNode.children) {
-                yield* iterativeMake(childNode, scope, elementUuids, elementUuid)
+                yield* iterativeMake(childNode, scope, elementUuids, elementUuid, childSequence)
             }
         } else if(Object.hasOwn(scope, variable)) {
             scope = scope[variable]
             if(typeof scope[Symbol.iterator] === 'function') {
+                let index = 0
                 for(let record of scope) {
                     for(let childNode of treeNode.children) {
-                        yield* iterativeMake(childNode, record, elementUuids, elementUuid)
+                        yield* iterativeMake(childNode, record, elementUuids, elementUuid, [...childSequence, index])
                     }
+                    index += 1
                 }
             } else {
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, scope, elementUuids, elementUuid)
+                    yield* iterativeMake(childNode, scope, elementUuids, elementUuid, childSequence)
                 }
             }
         }
@@ -183,7 +202,7 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
                 } catch(error) { console.error(error); break guard }
                 
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, record, elementUuids, elementUuid)
+                    yield* iterativeMake(childNode, record, elementUuids, elementUuid, [...childSequence, -1])
                 }
             }
         }
@@ -191,7 +210,7 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
         if(variable && Object.hasOwn(scope, variable)) {
             if(typeof scope[variable] === 'boolean' && scope[variable] === true) {
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, scope, elementUuids, elementUuid)
+                    yield* iterativeMake(childNode, scope, elementUuids, elementUuid, [...childSequence, 't'])
                 }
             }
         }
@@ -199,7 +218,7 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
         if(variable && Object.hasOwn(scope, variable)) {
             if(typeof scope[variable] === 'boolean' && scope[variable] === false) {
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, scope, elementUuids, elementUuid)
+                    yield* iterativeMake(childNode, scope, elementUuids, elementUuid, [...childSequence, 'f'])
                 }
             }
         }
@@ -208,7 +227,11 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
             let attribute = HANDLED_EVENTS.get(variable)
             if(attribute && Object.hasOwn(scope, attribute)) {
                 let handler = scope[attribute].bind(scope)
-                elementUuids.get(elementUuid).push(
+                
+                let sequenceHash = childSequence.join("_")
+                let identifier = `${elementUuid}-${sequenceHash}`
+            
+                elementUuids.get(identifier).push(
                     _ => _['on'+variable] = handler
                 )
             }
@@ -216,7 +239,11 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
     } else if(treeNode.textContent) {
         if(variable && Object.hasOwn(scope, variable)) {
             let value = scope[variable]
-            elementUuids.get(elementUuid).push(
+            
+            let sequenceHash = childSequence.join("_")
+            let identifier = `${elementUuid}-${sequenceHash}`
+            
+            elementUuids.get(identifier).push(
                 _ => (_.textContent = value)
             )
         }
@@ -232,11 +259,15 @@ function* iterativeMake(treeNode, scope, elementUuids, elementUuid) {
                 let value = scope[variable]
                 var sideEffect = _ => _.setAttribute(treeNode.pipe, value)
             }
-            elementUuids.get(elementUuid).push(sideEffect)
+            
+            let sequenceHash = childSequence.join("_")
+            let identifier = `${elementUuid}-${sequenceHash}`
+            
+            elementUuids.get(identifier).push(sideEffect)
         }
     } else {
         for(let childNode of treeNode.children) {
-            yield* iterativeMake(childNode, scope, elementUuids, elementUuid)
+            yield* iterativeMake(childNode, scope, elementUuids, elementUuid, childSequence)
         }
     }
 }
@@ -248,7 +279,7 @@ function compile(template) {
     const hydrate = (domRoot, scope) => {
         let elementUuids = new Map()
         let rawHTML = [
-            ...iterativeMake(root, scope, elementUuids)
+            ...iterativeMake(root, scope, elementUuids, undefined, [])
         ].join("")
         domRoot.innerHTML = rawHTML
         for(let [uuid, sideEffects] of elementUuids) {
@@ -262,9 +293,6 @@ function compile(template) {
     
     return { hydrate }
 }
-
-
-export { compile }
 
 
 export { compile }
