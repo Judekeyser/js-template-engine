@@ -3,16 +3,13 @@ Author: Justin DEKEYSER
 Year: August 2023
 License: Apache License, Version 2.0, January 2004, http://www.apache.org/licenses/
 
-Version: 0.0.1b
+Version: 0.0.2b
 
 This is the template engine source code. We might modify contracts and implementations at any moment.
 
 Current state:
 --------------
     - Hydratation and Rehydratation are implemented and functional on model example
-    - Still need to polish the code and make it prettier
-        - is it possible to merge the two logic, without making the understanding hard?
-        - there should be a way in the hydrate case, to either emit a text or else a side effect
     - We should augment the number of warning and errors
         - How to prevent corrupted hydratation?
 */
@@ -33,7 +30,7 @@ const SECTION_MARKER = '#'
 const EMPTY_SECTION_MARKER = '^'
 const IF_BLOCK_MARKER = '?'
 const ELSE_BLOCK_MARKER = ':'
-const TEXT_CONTENT_MARKER = '§'
+const TEXT_CONTENT_MARKER = '$'
 const EVENT_MARKER = '%'
 const PIPE_DELIMITER = '|'
 const END_OF_BLOCK = '/'
@@ -160,7 +157,7 @@ function generateTreeFromExpression(template) {
 }
 
 
-function* iterativeMake(treeNode, scope, sideEffectOrchestrator, elementUuid, childSequence) {
+function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
     if(!scope) yield ''
     let variable = treeNode.variable
     
@@ -175,12 +172,10 @@ function* iterativeMake(treeNode, scope, sideEffectOrchestrator, elementUuid, ch
             let sequenceHash = childSequence.join("_")
             let identifier = `${elementUuid}-${sequenceHash}`
             
-            sideEffectOrchestrator.registerIdentifier(identifier)
-            
             yield ` ${IDENTIFICATION_ATTRIBUTE}="${identifier}" `
 
             for(let childNode of treeNode.children) {
-                yield* iterativeMake(childNode, scope, sideEffectOrchestrator, elementUuid, childSequence)
+                yield* iterativeMake(childNode, scope, elementUuid, childSequence)
             }
         } else if(Object.hasOwn(scope, variable)) {
             scope = scope[variable]
@@ -188,14 +183,14 @@ function* iterativeMake(treeNode, scope, sideEffectOrchestrator, elementUuid, ch
                 childSequence.push(0)
                 for(let record of scope) {
                     for(let childNode of treeNode.children) {
-                        yield* iterativeMake(childNode, record, sideEffectOrchestrator, elementUuid, childSequence)
+                        yield* iterativeMake(childNode, record, elementUuid, childSequence)
                     }
                     childSequence[childSequence.length - 1] += 1
                 }
                 childSequence.pop()
             } else {
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, scope, sideEffectOrchestrator, elementUuid, childSequence)
+                    yield* iterativeMake(childNode, scope, elementUuid, childSequence)
                 }
             }
         }
@@ -209,7 +204,7 @@ function* iterativeMake(treeNode, scope, sideEffectOrchestrator, elementUuid, ch
                 
                 childSequence.push('-1')
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, record, sideEffectOrchestrator, elementUuid, childSequence)
+                    yield* iterativeMake(childNode, record, elementUuid, childSequence)
                 }
                 childSequence.pop()
             }
@@ -219,7 +214,7 @@ function* iterativeMake(treeNode, scope, sideEffectOrchestrator, elementUuid, ch
             if(typeof scope[variable] === 'boolean' && scope[variable] === true) {
                 childSequence.push('t')
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, scope, sideEffectOrchestrator, elementUuid, childSequence)
+                    yield* iterativeMake(childNode, scope, elementUuid, childSequence)
                 }
                 childSequence.pop()
             }
@@ -229,7 +224,7 @@ function* iterativeMake(treeNode, scope, sideEffectOrchestrator, elementUuid, ch
             if(typeof scope[variable] === 'boolean' && scope[variable] === false) {
                 childSequence.push('f')
                 for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, scope, sideEffectOrchestrator, elementUuid, childSequence)
+                    yield* iterativeMake(childNode, scope, elementUuid, childSequence)
                 }
                 childSequence.pop()
             }
@@ -243,10 +238,10 @@ function* iterativeMake(treeNode, scope, sideEffectOrchestrator, elementUuid, ch
                 let sequenceHash = childSequence.join("_")
                 let identifier = `${elementUuid}-${sequenceHash}`
             
-                sideEffectOrchestrator.registerSideEffect(
+                yield [
                     identifier,
                     _ => _['on'+variable] = handler
-                )
+                ]
             }
         }
     } else if(treeNode.textContent) {
@@ -256,10 +251,10 @@ function* iterativeMake(treeNode, scope, sideEffectOrchestrator, elementUuid, ch
             let sequenceHash = childSequence.join("_")
             let identifier = `${elementUuid}-${sequenceHash}`
             
-            sideEffectOrchestrator.registerSideEffect(
+            yield [
                 identifier,
                 _ => (_.textContent = value)
-            )
+            ]
         }
     } else if(treeNode.pipe) {
         if(variable && Object.hasOwn(scope, variable)) {
@@ -277,153 +272,11 @@ function* iterativeMake(treeNode, scope, sideEffectOrchestrator, elementUuid, ch
             let sequenceHash = childSequence.join("_")
             let identifier = `${elementUuid}-${sequenceHash}`
             
-            sideEffectOrchestrator.registerSideEffect(identifier, sideEffect)
-        }
-    } else if(treeNode.root) {
-        for(let childNode of treeNode.children) {
-            yield* iterativeMake(childNode, scope, sideEffectOrchestrator, elementUuid, childSequence)
-        }
-    } else {
-        throw "Kawabunga, we are on a node we cannot handle?"
-    }
-}
-
-
-function* iterativeRehydrate(treeNode, scope, elementUuid, childSequence) {
-    if(!scope) yield ''
-    let variable = treeNode.variable
-    
-    if(treeNode.slice != null) {
-        /* cancelled: cannot be done during rehyadrate
-        yield treeNode.slice
-        */
-    } else if(treeNode.section) {
-        if(!variable) {
-            if(elementUuid)
-                throw "Nested identification blocks are forbidden"
-            
-            elementUuid = treeNode.elementUuid
-            /* cancelled: cannot be done during rehyadrate
-            let sequenceHash = childSequence.join("_")
-            let identifier = `${elementUuid}-${sequenceHash}`
-            
-            sideEffectOrchestrator.registerIdentifier(identifier)
-            
-            yield ` ${IDENTIFICATION_ATTRIBUTE}="${identifier}" `
-            */
-            
-            for(let childNode of treeNode.children) {
-                yield* iterativeRehydrate(childNode, scope, elementUuid, childSequence)
-            }
-        } else if(Object.hasOwn(scope, variable)) {
-            scope = scope[variable]
-            if(typeof scope[Symbol.iterator] === 'function') {
-                childSequence.push(0)
-                for(let record of scope) {
-                    for(let childNode of treeNode.children) {
-                        yield* iterativeRehydrate(childNode, record, elementUuid, childSequence)
-                    }
-                    childSequence[childSequence.length - 1] += 1
-                }
-                childSequence.pop()
-            } else {
-                for(let childNode of treeNode.children) {
-                    yield* iterativeRehydrate(childNode, scope, elementUuid, childSequence)
-                }
-            }
-        }
-    } else if(treeNode.emptySection) {
-        if(variable && Object.hasOwn(scope, variable)) {
-            scope = scope[variable]
-            guard: {
-                try {
-                    for(let record of scope) break guard
-                } catch(error) { console.error(error); break guard }
-                
-                childSequence.push('-1')
-                for(let childNode of treeNode.children) {
-                    yield* iterativeRehydrate(childNode, record, elementUuid, childSequence)
-                }
-                childSequence.pop()
-            }
-        }
-    } else if(treeNode.positiveConditional) {
-        if(variable && Object.hasOwn(scope, variable)) {
-            if(typeof scope[variable] === 'boolean' && scope[variable] === true) {
-                childSequence.push('t')
-                for(let childNode of treeNode.children) {
-                    yield* iterativeRehydrate(childNode, scope, elementUuid, childSequence)
-                }
-                childSequence.pop()
-            }
-        }
-    } else if(treeNode.negativeConditional) {
-        if(variable && Object.hasOwn(scope, variable)) {
-            if(typeof scope[variable] === 'boolean' && scope[variable] === false) {
-                childSequence.push('f')
-                for(let childNode of treeNode.children) {
-                    yield* iterativeRehydrate(childNode, scope, elementUuid, childSequence)
-                }
-                childSequence.pop()
-            }
-        }
-    } else if(treeNode.event) {
-        if(variable) {
-            let attribute = HANDLED_EVENTS.get(variable)
-            if(attribute && Object.hasOwn(scope, attribute)) {
-                let handler = scope[attribute].bind(scope)
-                
-                let sequenceHash = childSequence.join("_")
-                let identifier = `${elementUuid}-${sequenceHash}`
-            
-                /* Nothing to register. During rehydrate, we should yield the side effect
-                sideEffectOrchestrator.registerSideEffect(
-                    identifier,
-                    _ => _['on'+variable] = handler
-                )
-                */
-                yield [identifier, _ => _['on'+variable] = handler]
-            }
-        }
-    } else if(treeNode.textContent) {
-        if(variable && Object.hasOwn(scope, variable)) {
-            let value = scope[variable]
-            
-            let sequenceHash = childSequence.join("_")
-            let identifier = `${elementUuid}-${sequenceHash}`
-            
-            /* Nothing to register. During rehydrate, we should yield the side effect
-            sideEffectOrchestrator.registerSideEffect(
-                identifier,
-                _ => (_.textContent = value)
-            )
-            */
-            yield [identifier, _ => (_.textContent = value)]
-        }
-    } else if(treeNode.pipe) {
-        if(variable && Object.hasOwn(scope, variable)) {
-            if(treeNode.pipe === 'class') {
-                if(!!scope[variable]) {
-                    var sideEffect = _ => _.classList.add(variable)
-                } else {
-                    var sideEffect = _ => _.classList.remove(variable)
-                }
-            } else {
-                let value = scope[variable]
-                var sideEffect = _ => _.setAttribute(treeNode.pipe, value)
-            }
-            
-            let sequenceHash = childSequence.join("_")
-            let identifier = `${elementUuid}-${sequenceHash}`
-            
-            /* Nothing to register. During rehydrate, we should yield the side effect
-            sideEffectOrchestrator.registerSideEffect(identifier, sideEffect)
-            */
             yield [identifier, sideEffect]
         }
     } else if(treeNode.root) {
         for(let childNode of treeNode.children) {
-            yield* iterativeRehydrate(childNode, scope, elementUuid, childSequence)
+            yield* iterativeMake(childNode, scope, elementUuid, childSequence)
         }
     } else {
         throw "Kawabunga, we are on a node we cannot handle?"
@@ -435,40 +288,34 @@ function compile(template) {
     let root = generateTreeFromExpression(template)
     
     const hydrate = (domRoot, scope) => {
-        let elementUuids = new Map()
         
-        let sideEffectOrchestrator = {
-            _mapping: new Map(),
-            
-            registerIdentifier: function(identifier) {
-                if(this._mapping.has(identifier)) {
-                    throw "Logical error: identifier already exists"
+        let sideEffects = []; let rawHTML; {
+            let htmlFragments = []
+            for(let item of iterativeMake(root, scope, undefined, [])) {
+                if(typeof item === 'string') {
+                    htmlFragments.push(item)
                 } else {
-                    this._mapping.set(identifier, [])
+                    sideEffects.push(item)
                 }
-            },
-            
-            registerSideEffect: function(identifier, sideEffect) {
-                let canReplay = identifier.endsWith('_')
-                // No section block above, we can replay
-                
-                this._mapping.get(identifier).push({canReplay, sideEffect})
             }
+            rawHTML = htmlFragments.join("")
         }
         
-        let rawHTML = [
-            ...iterativeMake(root, scope, sideEffectOrchestrator, undefined, [])
-        ].join("")
         domRoot.innerHTML = rawHTML
-        for(let [uuid, sideEffects] of sideEffectOrchestrator._mapping) {
-            for(let { sideEffect } of sideEffects) {
-                sideEffect(domRoot.querySelector(`*[${IDENTIFICATION_ATTRIBUTE}=${uuid}]`))
-            }
+        for(let [identifier, sideEffect] of sideEffects) {
+            sideEffect(
+                domRoot.querySelector(`*[${IDENTIFICATION_ATTRIBUTE}=${identifier}]`)
+            )
         }
         
         const rehydrate = scope => {
-            for(let [uuid, sideEffect] of iterativeRehydrate(root, scope, undefined, [])) {
-                sideEffect(domRoot.querySelector(`*[${IDENTIFICATION_ATTRIBUTE}=${uuid}]`))
+            for(let item of iterativeMake(root, scope, undefined, [])) {
+                if(typeof item === 'string') continue
+                
+                let [identifier, sideEffect] = item
+                sideEffect(
+                    domRoot.querySelector(`*[${IDENTIFICATION_ATTRIBUTE}=${identifier}]`)
+                )
             }
         }
         
@@ -479,4 +326,6 @@ function compile(template) {
 }
 
 
+window['__COMPILER__'] = compile
 export { compile }
+
