@@ -3,7 +3,7 @@ Author: Justin DEKEYSER
 Year: August 2023
 License: Apache License, Version 2.0, January 2004, http://www.apache.org/licenses/
 
-Version: 0.0.3b
+Version: 0.0.4b
 
 This is the template engine source code. We might modify contracts and implementations at any moment.
 
@@ -15,6 +15,8 @@ Current state:
         - The API changed, and is now phrased with generators
     - We should augment the number of warning and errors
         - How to prevent corrupted hydratation?
+
+    - Stabilized. Waiting for bugs, improvements, or security breaches
 */
 const HANDLED_EVENTS = (() => {
     let mapping = new Map()
@@ -30,7 +32,6 @@ const OPENING_TOKEN = '{'
 const CLOSING_TOKEN = '}'
 
 const SECTION_MARKER = '#'
-const EMPTY_SECTION_MARKER = '^'
 const IF_BLOCK_MARKER = '?'
 const ELSE_BLOCK_MARKER = ':'
 const TEXT_CONTENT_MARKER = '$'
@@ -83,16 +84,6 @@ function generateTreeFromExpression(template) {
                         nextTree.elementUuid = elementUuid
                     }
                     
-                    tree.children.push(nextTree)
-                    ancestorChain.push(tree)
-                    ancestorChain.push(nextTree)
-                }; break;
-                case EMPTY_SECTION_MARKER: {
-                    let nextTree = {
-                        emptySection: true,
-                        variable,
-                        children: []
-                    }
                     tree.children.push(nextTree)
                     ancestorChain.push(tree)
                     ancestorChain.push(nextTree)
@@ -213,45 +204,32 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
                 }
             }
         }
-    } else if(treeNode.emptySection) {
-        if(variable && Object.hasOwn(scope, variable)) {
-            scope = scope[variable]
-            guard: {
-                if(scope) {
-                    if(typeof scope[Symbol.iterator] === 'function') {
-                        try {
-                            for(let record of scope) break guard
-                        } catch(error) { console.error(error); break guard }
-                    } else {
-                        break guard
-                    }
-                }
-                
-                childSequence.push('-1')
-                for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, record, elementUuid, childSequence)
-                }
-                childSequence.pop()
-            }
-        }
     } else if(treeNode.positiveConditional) {
         if(variable && Object.hasOwn(scope, variable)) {
             if(typeof scope[variable] === 'boolean' && scope[variable] === true) {
-                childSequence.push('t')
+                if(!elementUuid) {
+                    childSequence.push('t')
+                }
                 for(let childNode of treeNode.children) {
                     yield* iterativeMake(childNode, scope, elementUuid, childSequence)
                 }
-                childSequence.pop()
+                if(!elementUuid) {
+                    childSequence.pop()
+                }
             }
         }
     } else if(treeNode.negativeConditional) {
         if(variable && Object.hasOwn(scope, variable)) {
-            if(typeof scope[variable] === 'boolean' && scope[variable] === false) {
-                childSequence.push('f')
+            if(!scope[variable]) {
+                if(!elementUuid) {
+                    childSequence.push('f')
+                }
                 for(let childNode of treeNode.children) {
                     yield* iterativeMake(childNode, scope, elementUuid, childSequence)
                 }
-                childSequence.pop()
+                if(!elementUuid) {
+                    childSequence.pop()
+                }
             }
         }
     }
