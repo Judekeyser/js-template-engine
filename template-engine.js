@@ -36,6 +36,7 @@ const ELSE_BLOCK_MARKER = ':'
 const TEXT_CONTENT_MARKER = '$'
 const EVENT_MARKER = '%'
 const PIPE_DELIMITER = '|'
+const HARD_CODED_MARKER = '"'
 const END_OF_BLOCK = '/'
 
 const IDENTIFICATION_ATTRIBUTE = 'data-uuid'
@@ -136,12 +137,18 @@ function generateTreeFromExpression(template) {
                     let pipeIndex = template.indexOf(PIPE_DELIMITER, cursor)
                     if(pipeIndex == -1) throw "Malformed template"
                     if(pipeIndex >= closingIndex) throw "Malformed template"
-                    variable = template.substring(openingIndex+OPENING_TOKEN.length, pipeIndex).trim() // rectify
                     let pipe = template.substring(pipeIndex+PIPE_DELIMITER.length, closingIndex).trim()
-                    tree.children.push({
-                        variable,
-                        pipe
-                    })
+                    
+                    let leaf;
+                    if(variable.startsWith(HARD_CODED_MARKER)) {
+                        let markerIndex = template.indexOf(HARD_CODED_MARKER, cursor+openingIndex)
+                        let value = template.substring(markerIndex+markerIndex.length, pipeIndex).trim() // rectify
+                        leaf = { value, pipe }
+                    } else {
+                        variable = template.substring(openingIndex+OPENING_TOKEN.length, pipeIndex).trim() // rectify
+                        leaf = { variable, pipe }
+                    }
+                    tree.children.push(leaf)
                     ancestorChain.push(tree)
                 }; break;
             }
@@ -189,18 +196,20 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
             }
         } else if(Object.hasOwn(scope, variable)) {
             scope = scope[variable]
-            if(typeof scope[Symbol.iterator] === 'function') {
-                childSequence.push(0)
-                for(let record of scope) {
-                    for(let childNode of treeNode.children) {
-                        yield* iterativeMake(childNode, record, elementUuid, childSequence)
+            if(scope) {
+                if(typeof scope[Symbol.iterator] === 'function') {
+                    childSequence.push(0)
+                    for(let record of scope) {
+                        for(let childNode of treeNode.children) {
+                            yield* iterativeMake(childNode, record, elementUuid, childSequence)
+                        }
+                        childSequence[childSequence.length - 1] += 1
                     }
-                    childSequence[childSequence.length - 1] += 1
-                }
-                childSequence.pop()
-            } else {
-                for(let childNode of treeNode.children) {
-                    yield* iterativeMake(childNode, scope, elementUuid, childSequence)
+                    childSequence.pop()
+                } else {
+                    for(let childNode of treeNode.children) {
+                        yield* iterativeMake(childNode, scope, elementUuid, childSequence)
+                    }
                 }
             }
         }
@@ -208,9 +217,15 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
         if(variable && Object.hasOwn(scope, variable)) {
             scope = scope[variable]
             guard: {
-                try {
-                    for(let record of scope) break guard
-                } catch(error) { console.error(error); break guard }
+                if(scope) {
+                    if(typeof scope[Symbol.iterator] === 'function') {
+                        try {
+                            for(let record of scope) break guard
+                        } catch(error) { console.error(error); break guard }
+                    } else {
+                        break guard
+                    }
+                }
                 
                 childSequence.push('-1')
                 for(let childNode of treeNode.children) {
@@ -272,23 +287,44 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
     } else if(treeNode.pipe) {
         let sequenceHash = childSequence.join("_")
         let identifier = `${elementUuid}-${sequenceHash}`
-        if(variable && Object.hasOwn(scope, variable) && scope[variable]) {
-            let attributeName = treeNode.pipe
-            
-            if(attributeName === 'class') {
+        let attributeName = treeNode.pipe
+        if(attributeName === 'class') {
+            let value = null;
+            if(treeNode.value == null) {
+                if(variable && Object.hasOwn(scope, variable) && scope[variable]) {
+                    value = variable
+                }
+            } else {
+                value = treeNode.value
+            }
+            if(value != null)
                 yield [
                     identifier,
-                    _ => _.classList.add(variable),
-                    _ => _.classList.remove(variable)
+                    _ => _.classList.add(value),
+                    _ => _.classList.remove(value)
                 ]
+        } else {
+            let value = null
+            if(treeNode.value == null) {
+                if(variable && Object.hasOwn(scope, variable) && scope[variable]) {
+                    value = scope[variable]
+                }
             } else {
-                let value = scope[variable]
+                value = treeNode.value
+            }
+            if(value != null)
                 yield [
                     identifier,
                     _ => _.setAttribute(attributeName, value),
                     _ => _.removeAttribute(attributeName)
                 ]
-            }
+        }
+        
+        if(treeNode.value) {
+            
+        }
+        if(variable && Object.hasOwn(scope, variable) && scope[variable]) {
+
         }
     } else {
         throw "Kawabunga, we are on a node we cannot handle?"
@@ -351,7 +387,6 @@ function compile(template) {
             
             if(!scope) {
                 // STEP 4b: when no scope, we stop
-                console.warn("No scope anymore")
                 break
             } else {
                 // STEP 4: Iterate on the scope again,
