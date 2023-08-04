@@ -3,13 +3,16 @@ Author: Justin DEKEYSER
 Year: August 2023
 License: Apache License, Version 2.0, January 2004, http://www.apache.org/licenses/
 
-Version: 0.0.2b
+Version: 0.0.3b
 
 This is the template engine source code. We might modify contracts and implementations at any moment.
 
 Current state:
 --------------
     - Hydratation and Rehydratation are implemented and functional on model example
+    - A cancellation mechanism is setup:
+        - cleaner and easier to reason about when observing the template
+        - The API changed, and is now phrased with generators
     - We should augment the number of warning and errors
         - How to prevent corrupted hydratation?
 */
@@ -23,8 +26,8 @@ const HANDLED_EVENTS = (() => {
 
 const MAX_ALLOWED_DEPTH = 10
 
-const OPENING_TOKEN = '{{'
-const CLOSING_TOKEN = '}}'
+const OPENING_TOKEN = '{'
+const CLOSING_TOKEN = '}'
 
 const SECTION_MARKER = '#'
 const EMPTY_SECTION_MARKER = '^'
@@ -76,7 +79,7 @@ function generateTreeFromExpression(template) {
                             elementUuid = 'uuid'+parseInt(Math.random() * 100_000_000)
                         } while(elementUuids.has(elementUuid))
                         elementUuids.add(elementUuid)
-                    nextTree.elementUuid = elementUuid
+                        nextTree.elementUuid = elementUuid
                     }
                     
                     tree.children.push(nextTree)
@@ -133,8 +136,8 @@ function generateTreeFromExpression(template) {
                     let pipeIndex = template.indexOf(PIPE_DELIMITER, cursor)
                     if(pipeIndex == -1) throw "Malformed template"
                     if(pipeIndex >= closingIndex) throw "Malformed template"
-                    variable = template.substring(openingIndex+2, pipeIndex).trim() // rectify
-                    let pipe = template.substring(pipeIndex+1, closingIndex).trim()
+                    variable = template.substring(openingIndex+OPENING_TOKEN.length, pipeIndex).trim() // rectify
+                    let pipe = template.substring(pipeIndex+PIPE_DELIMITER.length, closingIndex).trim()
                     tree.children.push({
                         variable,
                         pipe
@@ -161,8 +164,15 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
     if(!scope) yield ''
     let variable = treeNode.variable
     
+    /* First case, the tree represents a simple slice */
     if(treeNode.slice != null) {
         yield treeNode.slice
+    }
+    /* Second family of cases, the tree is about some block */
+    else if(treeNode.root) {
+        for(let childNode of treeNode.children) {
+            yield* iterativeMake(childNode, scope, elementUuid, childSequence)
+        }
     } else if(treeNode.section) {
         if(!variable) {
             if(elementUuid)
@@ -229,7 +239,9 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
                 childSequence.pop()
             }
         }
-    } else if(treeNode.event) {
+    }
+    /* In those cases, the tree always represents a side effect */
+    else if(treeNode.event) {
         if(variable) {
             let attribute = HANDLED_EVENTS.get(variable)
             if(attribute && Object.hasOwn(scope, attribute)) {
@@ -240,43 +252,43 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
             
                 yield [
                     identifier,
-                    _ => _['on'+variable] = handler
+                    _ => _.addEventListener(variable, handler),
+                    _ => _.removeEventListener(variable, handler)
                 ]
             }
         }
     } else if(treeNode.textContent) {
-        if(variable && Object.hasOwn(scope, variable)) {
-            let value = scope[variable]
-            
+        if(variable && Object.hasOwn(scope, variable) && scope[variable]) {
             let sequenceHash = childSequence.join("_")
             let identifier = `${elementUuid}-${sequenceHash}`
             
+            let value = scope[variable] || ''
             yield [
                 identifier,
-                _ => (_.textContent = value)
+                _ => (_.textContent = value),
+                _ => (_.textContent = '')
             ]
         }
     } else if(treeNode.pipe) {
-        if(variable && Object.hasOwn(scope, variable)) {
-            if(treeNode.pipe === 'class') {
-                if(!!scope[variable]) {
-                    var sideEffect = _ => _.classList.add(variable)
-                } else {
-                    var sideEffect = _ => _.classList.remove(variable)
-                }
+        let sequenceHash = childSequence.join("_")
+        let identifier = `${elementUuid}-${sequenceHash}`
+        if(variable && Object.hasOwn(scope, variable) && scope[variable]) {
+            let attributeName = treeNode.pipe
+            
+            if(attributeName === 'class') {
+                yield [
+                    identifier,
+                    _ => _.classList.add(variable),
+                    _ => _.classList.remove(variable)
+                ]
             } else {
                 let value = scope[variable]
-                var sideEffect = _ => _.setAttribute(treeNode.pipe, value)
+                yield [
+                    identifier,
+                    _ => _.setAttribute(attributeName, value),
+                    _ => _.removeAttribute(attributeName)
+                ]
             }
-            
-            let sequenceHash = childSequence.join("_")
-            let identifier = `${elementUuid}-${sequenceHash}`
-            
-            yield [identifier, sideEffect]
-        }
-    } else if(treeNode.root) {
-        for(let childNode of treeNode.children) {
-            yield* iterativeMake(childNode, scope, elementUuid, childSequence)
         }
     } else {
         throw "Kawabunga, we are on a node we cannot handle?"
@@ -287,45 +299,77 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
 function compile(template) {
     let root = generateTreeFromExpression(template)
     
-    const hydrate = (domRoot, scope) => {
+    return function* Hydrate(domRoot, scope) {
+        let sideEffects = new Map();
         
-        let sideEffects = []; let rawHTML; {
+        /* hydratation not done yet */
+        {
             let htmlFragments = []
             for(let item of iterativeMake(root, scope, undefined, [])) {
                 if(typeof item === 'string') {
                     htmlFragments.push(item)
                 } else {
-                    sideEffects.push(item)
+                    let [identifier, sideEffect, cancelEffect] = item
+                    if(! sideEffects.has(identifier)) {
+                        sideEffects.set(identifier, [])
+                    }
+                    sideEffects.get(identifier).push({ sideEffect, cancelEffect })
                 }
             }
-            rawHTML = htmlFragments.join("")
+            domRoot.innerHTML = htmlFragments.join("")
         }
         
-        domRoot.innerHTML = rawHTML
-        for(let [identifier, sideEffect] of sideEffects) {
-            sideEffect(
-                domRoot.querySelector(`*[${IDENTIFICATION_ATTRIBUTE}=${identifier}]`)
-            )
-        }
-        
-        const rehydrate = scope => {
-            for(let item of iterativeMake(root, scope, undefined, [])) {
-                if(typeof item === 'string') continue
+        for(;;)
+        {
+            // Start of the loop, we know the DOM is ready
+            // and sideEffects map is filled but not applied yet
+            
+            // STEP 1: Perform the side effects
+            for(let [identifier, effects] of sideEffects) {
+                let element = domRoot.querySelector(`*[${IDENTIFICATION_ATTRIBUTE}=${identifier}]`)
+                for(let pair of effects) {
+                    pair.sideEffect(element)
+                    delete pair.sideEffect
+                }
+            }
+            
+            // STEP 2: yield nothing and wait for next scope to show up
+            scope = yield
+            
+            // STEP 3: perform clean
+            for(let [identifier, effects] of sideEffects) {
+                let element = domRoot.querySelector(`*[${IDENTIFICATION_ATTRIBUTE}=${identifier}]`)
+                do {
+                    let effect = effects.pop()
+                    if(effect) {
+                        effect.cancelEffect(element)
+                    } else {
+                        break
+                    }
+                } while(true)
+            }
+            
+            if(!scope) {
+                // STEP 4b: when no scope, we stop
+                console.warn("No scope anymore")
+                break
+            } else {
+                // STEP 4: Iterate on the scope again,
+                // populate the effects map again
                 
-                let [identifier, sideEffect] = item
-                sideEffect(
-                    domRoot.querySelector(`*[${IDENTIFICATION_ATTRIBUTE}=${identifier}]`)
-                )
+                for(let item of iterativeMake(root, scope, undefined, [])) {
+                    if(typeof item === 'string') {
+                        continue
+                    } else {
+                        let [identifier, sideEffect, cancelEffect] = item
+                        sideEffects.get(identifier).push({ sideEffect, cancelEffect })
+                    }
+                }
             }
         }
-        
-        return { rehydrate }
     }
-    
-    return { hydrate }
 }
 
 
 window['__COMPILER__'] = compile
 export { compile }
-
