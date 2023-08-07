@@ -3,18 +3,15 @@ Author: Justin DEKEYSER
 Year: August 2023
 License: Apache License, Version 2.0, January 2004, http://www.apache.org/licenses/
 
-Version: 0.0.4b
+Version: 0.0.5b
 
 This is the template engine source code. We might modify contracts and implementations at any moment.
 
 Current state:
 --------------
     - Hydratation and Rehydratation are implemented and functional on model example
-    - A cancellation mechanism is setup:
-        - cleaner and easier to reason about when observing the template
-        - The API changed, and is now phrased with generators
-    - We should augment the number of warning and errors
-        - How to prevent corrupted hydratation?
+    - Most redundant white spaces are removed (<pre> is not supported anymore)
+    - blank string are removed when inside a {#} block
 
     - Stabilized. Waiting for bugs, improvements, or security breaches
 */
@@ -42,6 +39,8 @@ const END_OF_BLOCK = '/'
 
 const IDENTIFICATION_ATTRIBUTE = 'data-uuid'
 
+const BLANK_PATTERN = /\s\s+/g
+
 
 function generateTreeFromExpression(template) {
     let root = {
@@ -52,6 +51,7 @@ function generateTreeFromExpression(template) {
     
     let cursor = 0
     let ancestorChain = [root]
+    let forceKillSpaces = false
     
     for(;cursor < template.length;) {
         if(ancestorChain.length >= MAX_ALLOWED_DEPTH)
@@ -61,11 +61,33 @@ function generateTreeFromExpression(template) {
         let tree = ancestorChain.pop()
         
         if(openingIndex >= 0) {
-            tree.children.push({
-                slice: template.substring(cursor, openingIndex)
-            })
-            let closingIndex = template.indexOf(CLOSING_TOKEN, cursor)
-            if(closingIndex == -1) throw "Malformed template"
+            {
+                if(cursor + 1 < openingIndex) {
+                    let slice = template.substring(cursor, openingIndex).replace(BLANK_PATTERN, ' ');
+                    emitSlice: {
+                        if(slice === ' ') {
+                            // Heuristic: do not emit spaces when they are inside a {#} block.
+                            if(tree.elementUuid) {
+                                break emitSlice
+                            } else {
+                                for(let N = ancestorChain.length; --N >= 0;) {
+                                    if(ancestorChain[N].elementUuid) {
+                                        break emitSlice
+                                    }
+                                }
+                            }
+                        }
+                        tree.children.push({ slice })
+                    }
+                }
+            }
+            let closingIndex = template.indexOf(CLOSING_TOKEN, openingIndex)
+            if(closingIndex == -1) {
+                let estimatedLineNumber = 0
+                for(let c of template.substring(0, openingIndex))
+                    if(c == '\n') estimatedLineNumber += 1
+                throw `No closing symbol found for opening block; around line ${estimatedLineNumber}`
+            }
             
             let variable = template.substring(openingIndex+OPENING_TOKEN.length+1, closingIndex).trim()
             switch(template[openingIndex+OPENING_TOKEN.length]) {
@@ -125,20 +147,25 @@ function generateTreeFromExpression(template) {
                 case END_OF_BLOCK:
                     break;
                 default: {
-                    let pipeIndex = template.indexOf(PIPE_DELIMITER, cursor)
-                    if(pipeIndex == -1) throw "Malformed template"
-                    if(pipeIndex >= closingIndex) throw "Malformed template"
-                    let pipe = template.substring(pipeIndex+PIPE_DELIMITER.length, closingIndex).trim()
+                    let variable = template.substring(openingIndex+OPENING_TOKEN.length, closingIndex).trim() // rectify
+                    let pipeIndex = variable.indexOf(PIPE_DELIMITER)
+                    if(pipeIndex == -1) {
+                        let estimatedLineNumber = 0
+                        for(let c of template.substring(0, openingIndex))
+                            if(c == '\n') estimatedLineNumber += 1
+                        throw `No pipe delimiter found, though we reach the end of potential blocks; around line ${estimatedLineNumber}`
+                    }
+                    let pipe = variable.substring(pipeIndex+PIPE_DELIMITER.length, variable.length).trim()
+                    variable = variable.substring(0, pipeIndex).trim()
                     
                     let leaf;
                     if(variable.startsWith(HARD_CODED_MARKER)) {
-                        let markerIndex = template.indexOf(HARD_CODED_MARKER, cursor+openingIndex)
-                        let value = template.substring(markerIndex+markerIndex.length, pipeIndex).trim() // rectify
+                        let value = variable.substring(1, variable.length).trim()
                         leaf = { value, pipe }
                     } else {
-                        variable = template.substring(openingIndex+OPENING_TOKEN.length, pipeIndex).trim() // rectify
                         leaf = { variable, pipe }
                     }
+
                     tree.children.push(leaf)
                     ancestorChain.push(tree)
                 }; break;
@@ -147,7 +174,7 @@ function generateTreeFromExpression(template) {
             cursor = closingIndex + CLOSING_TOKEN.length
         } else {
             tree.children.push({
-                slice: template.substring(cursor, template.length)
+                slice: template.substring(cursor, template.length).replace(BLANK_PATTERN, ' ')
             })
             
             cursor = template.length // loop is over, so break is not required
