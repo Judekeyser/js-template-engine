@@ -324,13 +324,6 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
                     _ => _.removeAttribute(attributeName)
                 ]
         }
-        
-        if(treeNode.value) {
-            
-        }
-        if(variable && Object.hasOwn(scope, variable) && scope[variable]) {
-
-        }
     } else {
         throw "Kawabunga, we are on a node we cannot handle?"
     }
@@ -396,12 +389,14 @@ function compile(template) {
             } else {
                 // STEP 4: Iterate on the scope again,
                 // populate the effects map again
-                
                 for(let item of iterativeMake(root, scope, undefined, [])) {
                     if(typeof item === 'string') {
                         continue
                     } else {
                         let [identifier, sideEffect, cancelEffect] = item
+                        if(!sideEffects.has(identifier)) {
+                            sideEffects.set(identifier, [])
+                        }
                         sideEffects.get(identifier).push({ sideEffect, cancelEffect })
                     }
                 }
