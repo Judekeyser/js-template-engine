@@ -42,16 +42,15 @@ const IDENTIFICATION_ATTRIBUTE = 'data-uuid'
 const BLANK_PATTERN = /\s\s+/g
 
 
-function generateTreeFromExpression(template) {
+function generateTreeFromExpression(template, reservedUuids) {
     let root = {
         children: [],
         root: true
     }
-    let elementUuids = new Set()
+    let elementUuids = new Set(reservedUuids)
     
     let cursor = 0
     let ancestorChain = [root]
-    let forceKillSpaces = false
     
     for(;cursor < template.length;) {
         if(ancestorChain.length >= MAX_ALLOWED_DEPTH)
@@ -233,7 +232,7 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
         }
     } else if(treeNode.positiveConditional) {
         if(variable && Object.hasOwn(scope, variable)) {
-            if(typeof scope[variable] === 'boolean' && scope[variable] === true) {
+            if(!!scope[variable]) {
                 if(!elementUuid) {
                     childSequence.push('t')
                 }
@@ -265,7 +264,7 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
         if(variable) {
             let attribute = HANDLED_EVENTS.get(variable)
             if(attribute && Object.hasOwn(scope, attribute)) {
-                let handler = scope[attribute].bind(scope)
+                let handler = scope[attribute]
                 
                 let sequenceHash = childSequence.join("_")
                 let identifier = `${elementUuid}-${sequenceHash}`
@@ -330,7 +329,7 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
 }
 
 
-function compile(template) {
+function compile(template, reservedUuids) {
     let root = generateTreeFromExpression(template)
     
     return function* Hydrate(domRoot, scope) {
