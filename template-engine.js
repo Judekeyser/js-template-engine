@@ -330,7 +330,7 @@ function* iterativeMake(treeNode, scope, elementUuid, childSequence) {
 
 
 function compile(template, reservedUuids) {
-    let root = generateTreeFromExpression(template)
+    let root = generateTreeFromExpression(template, reservedUuids)
     
     return function* Hydrate(domRoot, scope) {
         let sideEffects = new Map();
